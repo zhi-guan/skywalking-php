@@ -24,6 +24,7 @@ mod plugin_predis;
 mod plugin_psr3;
 mod plugin_redis;
 mod plugin_swoole;
+mod plugin_yar;
 mod style;
 
 use crate::{
@@ -41,6 +42,7 @@ use tracing::error;
 static PLUGINS: Lazy<Vec<Box<DynPlugin>>> = Lazy::new(|| {
     let mut plugins: Vec<Box<DynPlugin>> = vec![
         Box::<plugin_curl::CurlPlugin>::default(),
+        Box::<plugin_yar::YarPlugin>::default(),
         Box::<plugin_pdo::PdoPlugin>::default(),
         Box::<plugin_mysqli::MySQLImprovedPlugin>::default(),
         Box::<plugin_swoole::SwooleServerPlugin>::default(),
