@@ -17,11 +17,9 @@ use super::{Plugin, log_exception};
 use crate::{
     component::COMPONENT_PHP_ID,
     context::{RequestContext, SW_HEADER},
-    execute::{AfterExecuteHook, BeforeExecuteHook, Noop, get_this_mut, validate_num_args},
+    execute::{AfterExecuteHook, BeforeExecuteHook, get_this_mut, validate_num_args},
 };
-use anyhow::Context;
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
+use once_cell::sync::OnceCell;
 use phper::{
     arrays::{IterKey, ZArray},
     functions::call,
@@ -32,30 +30,19 @@ use skywalking::{
     proto::v3::SpanLayer,
     trace::span::{HandleSpanObject, Span},
 };
-use std::{cell::Cell, collections::HashMap};
+use std::collections::HashMap;
 use tracing::debug;
 use url::Url;
 
 const YAR_OPT_HEADER: &str = "YAR_OPT_HEADER";
 
-static CLIENT_INFO_MAP: Lazy<DashMap<u32, YarClientInfo>> = Lazy::new(Default::default);
-
-thread_local! {
-    static INTERNAL_SET_OPT: Cell<bool> = const { Cell::new(false) };
-}
+static YAR_OPT_HEADER_VALUE: OnceCell<i64> = OnceCell::new();
 
 #[derive(Default, Clone)]
 pub struct YarPlugin;
 
-#[derive(Default, Clone)]
-struct YarClientInfo {
-    uri: String,
-    headers: HashMap<String, String>,
-}
-
 struct YarCallInfo {
-    handle: u32,
-    headers: HashMap<String, String>,
+    original_headers: HashMap<String, String>,
     span: Span,
 }
 
@@ -79,8 +66,6 @@ impl Plugin for YarPlugin {
         &self, class_name: Option<&str>, function_name: &str,
     ) -> Option<(Box<BeforeExecuteHook>, Box<AfterExecuteHook>)> {
         match (class_name, function_name) {
-            (Some("Yar_Client"), "__construct") => Some(self.hook_construct()),
-            (Some("Yar_Client"), "setOpt") => Some(self.hook_set_opt()),
             (Some("Yar_Client"), "__call" | "call") => Some(self.hook_call()),
             _ => None,
         }
@@ -88,60 +73,6 @@ impl Plugin for YarPlugin {
 }
 
 impl YarPlugin {
-    fn hook_construct(&self) -> (Box<BeforeExecuteHook>, Box<AfterExecuteHook>) {
-        (
-            Box::new(|_, execute_data| {
-                validate_num_args(execute_data, 1)?;
-
-                let this = get_this_mut(execute_data)?;
-
-                let handle = this.handle();
-                let uri = execute_data
-                    .get_parameter(0)
-                    .expect_z_str()?
-                    .to_str()?
-                    .to_string();
-                let headers = execute_data
-                    .get_parameter(1)
-                    .as_z_arr()
-                    .and_then(extract_headers_from_options)
-                    .unwrap_or_default();
-
-                CLIENT_INFO_MAP.insert(handle, YarClientInfo { uri, headers });
-
-                Ok(Box::new(()))
-            }),
-            Noop::noop(),
-        )
-    }
-
-    fn hook_set_opt(&self) -> (Box<BeforeExecuteHook>, Box<AfterExecuteHook>) {
-        (
-            Box::new(|_, execute_data| {
-                validate_num_args(execute_data, 2)?;
-
-                if INTERNAL_SET_OPT.with(|flag| flag.get()) {
-                    return Ok(Box::new(()));
-                }
-
-                let option = execute_data.get_parameter(0).expect_long()?;
-                if option != get_yar_opt_header()? {
-                    return Ok(Box::new(()));
-                }
-
-                let this = get_this_mut(execute_data)?;
-                let handle = this.handle();
-                let headers = extract_headers(execute_data.get_mut_parameter(1))?;
-
-                let mut info = CLIENT_INFO_MAP.entry(handle).or_default();
-                info.headers = headers;
-
-                Ok(Box::new(()))
-            }),
-            Noop::noop(),
-        )
-    }
-
     fn hook_call(&self) -> (Box<BeforeExecuteHook>, Box<AfterExecuteHook>) {
         (
             Box::new(|request_id, execute_data| {
@@ -155,12 +86,10 @@ impl YarPlugin {
                 let this = get_this_mut(execute_data)?;
                 let handle = this.handle();
                 debug!(request_id, handle, method, "prepare yar client call");
-                let info = CLIENT_INFO_MAP
-                    .get(&handle)
-                    .map(|info| info.value().clone())
-                    .context("yar client info not exists")?;
 
-                let peer = parse_peer_info(&info.uri)?;
+                let uri = get_client_uri(this)?;
+                let original_headers = get_client_headers(this)?;
+                let peer = parse_peer_info(&uri);
                 debug!(
                     request_id,
                     handle,
@@ -182,12 +111,11 @@ impl YarPlugin {
                 span_object.add_tag("rpc.service", &peer.service);
                 span_object.add_tag("url", &peer.uri);
 
-                inject_sw_header(request_id, this, &peer.peer, &info.headers)?;
+                inject_sw_header(request_id, this, &peer.peer, &original_headers)?;
                 debug!(request_id, handle, "injected yar sw8 header");
 
                 Ok(Box::new(YarCallInfo {
-                    handle,
-                    headers: info.headers,
+                    original_headers,
                     span,
                 }))
             }),
@@ -197,19 +125,16 @@ impl YarPlugin {
                 }
 
                 let YarCallInfo {
-                    handle,
-                    headers,
+                    original_headers,
                     mut span,
                 } = *data.downcast::<YarCallInfo>().unwrap();
 
-                debug!(handle, "finish yar client call");
                 let this = get_this_mut(execute_data)?;
-                restore_headers(this, headers.clone())?;
-                debug!(handle, "restored yar headers");
+                let handle = this.handle();
+                debug!(handle, "finish yar client call");
 
-                if let Some(mut info) = CLIENT_INFO_MAP.get_mut(&handle) {
-                    info.headers = headers;
-                }
+                restore_headers(this, original_headers)?;
+                debug!(handle, "restored yar headers");
 
                 if return_value.as_bool() == Some(false) {
                     debug!(handle, "yar call returned false");
@@ -226,7 +151,28 @@ impl YarPlugin {
 }
 
 fn get_yar_opt_header() -> crate::Result<i64> {
-    Ok(call("constant", [ZVal::from(YAR_OPT_HEADER)])?.expect_long()?)
+    Ok(*YAR_OPT_HEADER_VALUE
+        .get_or_try_init(|| -> crate::Result<i64> {
+            Ok(call("constant", [ZVal::from(YAR_OPT_HEADER)])?.expect_long()?)
+        })?)
+}
+
+fn get_client_uri(this: &mut ZObj) -> crate::Result<String> {
+    Ok(this
+        .get_property("_uri")
+        .as_z_str()
+        .and_then(|uri| uri.to_str().ok())
+        .map(ToOwned::to_owned)
+        .unwrap_or_default())
+}
+
+fn get_client_headers(this: &mut ZObj) -> crate::Result<HashMap<String, String>> {
+    let options = this.get_property("_options");
+    let Some(options) = options.as_z_arr() else {
+        return Ok(HashMap::new());
+    };
+
+    extract_headers_from_options(options).map_or_else(|| Ok(HashMap::new()), Ok)
 }
 
 fn extract_headers_from_options(options: &phper::arrays::ZArr) -> Option<HashMap<String, String>> {
@@ -330,24 +276,35 @@ fn apply_headers(this: &mut ZObj, headers: &HashMap<String, String>) -> crate::R
     Ok(())
 }
 
-fn parse_peer_info(uri: &str) -> crate::Result<YarPeerInfo> {
-    let url = Url::parse(uri)?;
+fn parse_peer_info(uri: &str) -> YarPeerInfo {
+    if let Ok(url) = Url::parse(uri) {
+        let host = url.host_str().unwrap_or("unknown");
+        let port = url.port_or_known_default().unwrap_or_default();
+        let peer = format!("{host}:{port}");
+        let service = normalize_service_path(url.path());
 
-    let host = url.host_str().unwrap_or("unknown");
-    let port = url.port_or_known_default().unwrap_or_default();
-    let peer = format!("{}:{}", host, port);
-    let service = url
-        .path_segments()
-        .and_then(|segments| segments.last())
-        .filter(|segment| !segment.is_empty())
-        .unwrap_or("/")
-        .to_string();
+        YarPeerInfo {
+            uri: uri.to_string(),
+            peer,
+            service,
+        }
+    } else {
+        YarPeerInfo {
+            uri: uri.to_string(),
+            peer: "unknown:0".to_string(),
+            service: normalize_service_path(uri),
+        }
+    }
+}
 
-    Ok(YarPeerInfo {
-        uri: uri.to_string(),
-        peer,
-        service,
-    })
+fn normalize_service_path(path: &str) -> String {
+    if path.is_empty() {
+        "/".to_string()
+    } else if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    }
 }
 
 #[cfg(test)]
@@ -356,15 +313,22 @@ mod tests {
 
     #[test]
     fn parse_yar_peer_info() {
-        let info = parse_peer_info("http://127.0.0.1:9012/yar.server.php").unwrap();
+        let info = parse_peer_info("http://127.0.0.1:9012/api/v1/yar.server.php");
         assert_eq!(info.peer, "127.0.0.1:9012");
-        assert_eq!(info.service, "yar.server.php");
+        assert_eq!(info.service, "/api/v1/yar.server.php");
     }
 
     #[test]
     fn parse_yar_peer_info_without_explicit_port() {
-        let info = parse_peer_info("http://example.com/yar").unwrap();
+        let info = parse_peer_info("http://example.com/yar");
         assert_eq!(info.peer, "example.com:80");
-        assert_eq!(info.service, "yar");
+        assert_eq!(info.service, "/yar");
+    }
+
+    #[test]
+    fn parse_relative_yar_uri() {
+        let info = parse_peer_info("/yar.server.php");
+        assert_eq!(info.peer, "unknown:0");
+        assert_eq!(info.service, "/yar.server.php");
     }
 }
