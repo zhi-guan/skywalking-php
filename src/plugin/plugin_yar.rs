@@ -30,8 +30,8 @@ use skywalking::{
     proto::v3::SpanLayer,
     trace::span::{HandleSpanObject, Span},
 };
-use std::collections::HashMap;
-use tracing::debug;
+use std::collections::{BTreeMap, HashMap};
+use tracing::{debug, warn};
 use url::Url;
 
 const YAR_OPT_HEADER: &str = "YAR_OPT_HEADER";
@@ -88,6 +88,9 @@ impl YarPlugin {
                 debug!(request_id, handle, method, "prepare yar client call");
 
                 let uri = get_client_uri(this)?;
+                if uri.is_empty() {
+                    return Ok(Box::new(()));
+                }
                 let original_headers = get_client_headers(this)?;
                 let peer = parse_peer_info(&uri);
                 debug!(
@@ -158,15 +161,25 @@ fn get_yar_opt_header() -> crate::Result<i64> {
 }
 
 fn get_client_uri(this: &mut ZObj) -> crate::Result<String> {
-    Ok(this
+    // Yar keeps the request target on the private `_uri` property. We read the
+    // current object state instead of maintaining a separate Rust-side map.
+    let uri = this
         .get_property("_uri")
         .as_z_str()
         .and_then(|uri| uri.to_str().ok())
         .map(ToOwned::to_owned)
-        .unwrap_or_default())
+        .unwrap_or_default();
+
+    if uri.is_empty() {
+        warn!(handle = this.handle(), "Yar_Client::_uri is empty, skip tracing");
+    }
+
+    Ok(uri)
 }
 
 fn get_client_headers(this: &mut ZObj) -> crate::Result<HashMap<String, String>> {
+    // Yar stores custom headers in the private `_options` property. Reading it
+    // directly keeps the plugin stateless across requests.
     let options = this.get_property("_options");
     let Some(options) = options.as_z_arr() else {
         return Ok(HashMap::new());
@@ -243,7 +256,8 @@ fn restore_headers(this: &mut ZObj, headers: HashMap<String, String>) -> crate::
 
 fn apply_headers(this: &mut ZObj, headers: &HashMap<String, String>) -> crate::Result<()> {
     let mut header_arr = ZArray::new();
-    for (key, value) in headers {
+    let ordered_headers = headers.iter().collect::<BTreeMap<_, _>>();
+    for (key, value) in ordered_headers {
         let index = header_arr.len() as u64;
         header_arr.insert(index, format!("{key}: {value}"));
     }
