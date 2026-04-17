@@ -15,14 +15,14 @@
 
 mod plugin_amqplib;
 mod plugin_curl;
-mod plugin_memcache;
-mod plugin_memcached;
-mod plugin_mongodb;
+//mod plugin_memcache;
+//mod plugin_memcached;
+//mod plugin_mongodb;
 mod plugin_mysqli;
 mod plugin_pdo;
-mod plugin_predis;
+//mod plugin_predis;
 mod plugin_psr3;
-mod plugin_redis;
+// mod plugin_redis;
 mod plugin_swoole;
 mod plugin_yar;
 mod style;
@@ -47,12 +47,12 @@ static PLUGINS: Lazy<Vec<Box<DynPlugin>>> = Lazy::new(|| {
         Box::<plugin_mysqli::MySQLImprovedPlugin>::default(),
         Box::<plugin_swoole::SwooleServerPlugin>::default(),
         Box::<plugin_swoole::SwooleHttpResponsePlugin>::default(),
-        Box::<plugin_predis::PredisPlugin>::default(),
-        Box::<plugin_memcached::MemcachedPlugin>::default(),
-        Box::<plugin_redis::RedisPlugin>::default(),
+    // Box::<plugin_predis::PredisPlugin>::default(),
+       // Box::<plugin_memcached::MemcachedPlugin>::default(),
+      //  Box::<plugin_redis::RedisPlugin>::default(),
         Box::<plugin_amqplib::AmqplibPlugin>::default(),
-        Box::<plugin_mongodb::MongodbPlugin>::default(),
-        Box::<plugin_memcache::MemcachePlugin>::default(),
+      //  Box::<plugin_mongodb::MongodbPlugin>::default(),
+       // Box::<plugin_memcache::MemcachePlugin>::default(),
     ];
     if *PSR_LOGGING_LEVEL > PsrLogLevel::Off {
         plugins.push(Box::<plugin_psr3::Psr3Plugin>::default());

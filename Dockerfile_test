@@ -1,0 +1,61 @@
+# 使用您的基础镜像
+FROM rocketbird-mirror-registry.cn-shenzhen.cr.aliyuncs.com/rocketbird/php-fpm-basic:7.3-r6
+
+# ========== 第一步：配置 APT 基础环境 ==========
+RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until && \
+    echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \
+    echo 'Acquire::https::Verify-Peer "false";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \
+    echo 'Acquire::https::Verify-Host "false";' >> /etc/apt/apt.conf.d/99no-check-valid-until
+
+COPY sources.list /etc/apt/
+
+# 添加 LLVM 13 官方源
+RUN apt-get update && apt-get install -y curl gpg && \
+    echo "deb http://apt.llvm.org/buster/ llvm-toolchain-buster-13 main" > /etc/apt/sources.list.d/llvm.list && \
+    curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/llvm.gpg
+
+# ========== 第二步：安装编译所需的最小依赖 ==========
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc make autoconf pkg-config \
+    llvm-13-dev libclang-13-dev protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# ========== 第三步：配置 Rust 编译环境 (添加镜像源加速) ==========
+# 关键：设置环境变量指向国内镜像
+ENV RUSTUP_DIST_SERVER=https://rsproxy.cn
+ENV RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+
+# 使用加速脚本安装，并提前配置 cargo 镜像
+RUN curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh -s -- -y --default-toolchain 1.85.1 && \
+    mkdir -p /root/.cargo && \
+    echo '[source.crates-io]\n\
+replace-with = "rsproxy-sparse"\n\
+[source.rsproxy]\n\
+registry = "https://rsproxy.cn/crates.io-index"\n\
+[source.rsproxy-sparse]\n\
+registry = "sparse+https://rsproxy.cn/index/"' > /root/.cargo/config
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CLANG_PATH=/usr/bin/clang-13
+ENV LIBCLANG_PATH=/usr/lib/llvm-13/lib
+
+# ========== 第四步：从本地拷贝源码并编译 ==========
+WORKDIR /tmp/skywalking-php
+COPY . .
+
+# 执行 PHP 扩展编译流程
+# 增加环境变量确保 cargo 在 make 过程中也使用镜像
+RUN phpize && \
+    ./configure && \
+    make && \
+    make install && \
+    docker-php-ext-enable skywalking_agent
+
+# ========== 第五步：清理编译工具 ==========
+RUN apt-get purge -y --auto-remove \
+        gcc make autoconf pkg-config curl gpg \
+        llvm-13-dev libclang-13-dev protobuf-compiler && \
+    apt-get clean && \
+    rm -rf /root/.cargo /tmp/* /var/tmp/* /var/lib/apt/lists/*
+
+WORKDIR /code
