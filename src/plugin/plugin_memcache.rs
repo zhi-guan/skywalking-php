@@ -80,6 +80,11 @@ impl<'a> TagInfo<'a> {
 pub struct MemcachePlugin;
 
 impl Plugin for MemcachePlugin {
+    #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("memcache")
+    }
+
     fn class_names(&self) -> Option<&'static [&'static str]> {
         Some(&["Memcache", "MemcachePool"])
     }

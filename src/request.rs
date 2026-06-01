@@ -16,13 +16,14 @@
 use crate::{
     component::COMPONENT_PHP_ID,
     context::RequestContext,
-    module::{INJECT_CONTEXT, SKYWALKING_VERSION, is_enable},
+    module::{INJECT_CONTEXT, SAMPLE_RATE, SKYWALKING_VERSION, is_enable},
     util::{catch_unwind_result, get_sapi_module_name, z_val_to_string},
 };
 use anyhow::{Context, anyhow};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use phper::{arrays::ZArr, eg, pg, sg, sys, values::ZVal};
+use rand::Rng;
 use skywalking::trace::{propagation::decoder::decode_propagation, span::HandleSpanObject, tracer};
 use std::{
     panic::AssertUnwindSafe,
@@ -325,9 +326,25 @@ fn get_swoole_request_method(server: &ZArr) -> String {
         .unwrap_or_else(|| "UNKNOWN".to_string())
 }
 
+fn should_sample() -> bool {
+    let rate = *SAMPLE_RATE;
+    if rate >= 1.0 {
+        return true;
+    }
+    if rate <= 0.0 {
+        return false;
+    }
+    rand::thread_rng().gen_bool(rate)
+}
+
 fn create_request_context(
     request_id: Option<i64>, header: Option<&str>, method: &str, url: &Url,
 ) -> crate::Result<()> {
+    if !should_sample() {
+        trace!("Request not sampled, skipping trace context creation");
+        return Ok(());
+    }
+
     let propagation = header
         .map(decode_propagation)
         .transpose()
@@ -360,10 +377,14 @@ fn create_request_context(
 }
 
 fn finish_request_context(request_id: Option<i64>, status_code: i32) -> crate::Result<()> {
-    let RequestContext {
+    let Some(RequestContext {
         tracing_context,
         mut entry_span,
-    } = RequestContext::remove_global(request_id).context("request context not exists")?;
+    }) = RequestContext::remove_global(request_id)
+    else {
+        // Context not found, likely because request was not sampled.
+        return Ok(());
+    };
 
     entry_span.add_tag("http.status_code", status_code.to_string());
     if status_code >= 400 {

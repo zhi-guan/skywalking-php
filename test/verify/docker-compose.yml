@@ -1,0 +1,18 @@
+# docker-compose.yml - 验证 sample_rate 和 disable_plugins 功能
+# 单容器模式：redis 运行在 app 容器内部，无需外部镜像
+# 用法: cd test/verify && docker compose up -d --build
+
+services:
+  app:
+    platform: linux/amd64
+    build:
+      context: ../../
+      dockerfile: Dockerfile_verify
+    ports:
+      - "8088:80"
+    networks:
+      - verify-net
+
+networks:
+  verify-net:
+    driver: bridge

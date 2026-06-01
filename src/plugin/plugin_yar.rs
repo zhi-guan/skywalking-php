@@ -54,6 +54,11 @@ struct YarPeerInfo {
 }
 
 impl Plugin for YarPlugin {
+    #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("yar")
+    }
+
     fn class_names(&self) -> Option<&'static [&'static str]> {
         Some(&["Yar_Client"])
     }

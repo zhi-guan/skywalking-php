@@ -75,6 +75,11 @@ pub struct CurlPlugin;
 
 impl Plugin for CurlPlugin {
     #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("curl")
+    }
+
+    #[inline]
     fn class_names(&self) -> Option<&'static [&'static str]> {
         None
     }

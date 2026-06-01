@@ -167,6 +167,25 @@ pub static PSR_LOGGING_LEVEL: Lazy<PsrLogLevel> = Lazy::new(|| {
         .into()
 });
 
+/// Sample rate for request tracing (0.0 to 1.0).
+pub static SAMPLE_RATE: Lazy<f64> = Lazy::new(|| {
+    get_str_ini_with_default(SKYWALKING_AGENT_SAMPLE_RATE)
+        .parse::<f64>()
+        .unwrap_or(1.0)
+});
+
+/// List of disabled plugin names.
+pub static DISABLE_PLUGINS: Lazy<Vec<String>> = Lazy::new(|| {
+    let s = get_str_ini_with_default(SKYWALKING_AGENT_DISABLE_PLUGINS);
+    if s.is_empty() {
+        return Vec::new();
+    }
+    s.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+});
+
 pub fn init() {
     if !is_enable() {
         return;
@@ -193,6 +212,8 @@ pub fn init() {
     Lazy::force(&KAFKA_PRODUCER_CONFIG);
     Lazy::force(&INJECT_CONTEXT);
     Lazy::force(&PSR_LOGGING_LEVEL);
+    Lazy::force(&SAMPLE_RATE);
+    Lazy::force(&DISABLE_PLUGINS);
 
     if let Err(err) = try_init_logger() {
         eprintln!("skywalking_agent: initialize logger failed: {}", err);
@@ -205,6 +226,8 @@ pub fn init() {
         skywalking_version = &*SKYWALKING_VERSION,
         heartbeat_period = &*HEARTBEAT_PERIOD,
         properties_report_period_factor = &*PROPERTIES_REPORT_PERIOD_FACTOR,
+        sample_rate = &*SAMPLE_RATE,
+        disable_plugins = ?&*DISABLE_PLUGINS,
         "Starting skywalking agent"
     );
 

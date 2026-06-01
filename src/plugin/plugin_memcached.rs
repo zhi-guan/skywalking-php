@@ -144,6 +144,11 @@ impl<'a> TagInfo<'a> {
 pub struct MemcachedPlugin;
 
 impl Plugin for MemcachedPlugin {
+    #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("memcached")
+    }
+
     fn class_names(&self) -> Option<&'static [&'static str]> {
         Some(&["Memcached"])
     }

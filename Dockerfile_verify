@@ -1,0 +1,51 @@
+# ========== 第二阶段：基于已编译的 skywalking-verify-base 添加验证环境 ==========
+# 前置步骤：docker build --platform linux/amd64 -f Dockerfile_test -t skywalking-verify-base .
+FROM skywalking-verify-base
+
+# ========== 配置 APT ==========
+RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until && \
+    echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \
+    echo 'Acquire::https::Verify-Peer "false";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \
+    echo 'Acquire::https::Verify-Host "false";' >> /etc/apt/apt.conf.d/99no-check-valid-until
+
+COPY sources.list /etc/apt/
+
+# ========== 安装 nginx + supervisor + redis-server ==========
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nginx supervisor redis-server \
+    && rm -rf /var/lib/apt/lists/*
+
+# ========== 安装 yar 扩展（匹配生产环境 Yar 2.1.2） ==========
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc make autoconf \
+    && pecl install yar-2.1.2 \
+    && docker-php-ext-enable yar \
+    && apt-get purge -y gcc make autoconf \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/pear
+
+# ========== 配置 nginx + php-fpm ==========
+COPY test/verify/nginx.conf /etc/nginx/sites-available/default
+COPY test/verify/www/ /code/
+COPY test/verify/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# ========== 配置 skywalking（默认值，verify.sh 会动态修改） ==========
+RUN echo '[skywalking_agent]' > /usr/local/etc/php/conf.d/skywalking-test.ini && \
+    echo 'skywalking_agent.enable = 1' >> /usr/local/etc/php/conf.d/skywalking-test.ini && \
+    echo 'skywalking_agent.server_addr = "127.0.0.1:19876"' >> /usr/local/etc/php/conf.d/skywalking-test.ini && \
+    echo 'skywalking_agent.service_name = "verify-test"' >> /usr/local/etc/php/conf.d/skywalking-test.ini && \
+    echo 'skywalking_agent.log_level = "DEBUG"' >> /usr/local/etc/php/conf.d/skywalking-test.ini && \
+    echo 'skywalking_agent.log_file = "/tmp/skywalking-agent.log"' >> /usr/local/etc/php/conf.d/skywalking-test.ini && \
+    echo 'skywalking_agent.sample_rate = 1.0' >> /usr/local/etc/php/conf.d/skywalking-test.ini && \
+    echo 'skywalking_agent.disable_plugins = ""' >> /usr/local/etc/php/conf.d/skywalking-test.ini && \
+    echo 'skywalking_agent.inject_context = 1' >> /usr/local/etc/php/conf.d/skywalking-test.ini && \
+    echo 'skywalking_agent.worker_threads = 2' >> /usr/local/etc/php/conf.d/skywalking-test.ini
+
+# 模拟生产环境：session 存 Redis
+RUN echo '[Session]' > /usr/local/etc/php/conf.d/session-redis.ini && \
+    echo 'session.save_handler = redis' >> /usr/local/etc/php/conf.d/session-redis.ini && \
+    echo 'session.save_path = "tcp://127.0.0.1:6379"' >> /usr/local/etc/php/conf.d/session-redis.ini
+
+WORKDIR /code
+
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

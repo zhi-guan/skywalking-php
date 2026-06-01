@@ -37,6 +37,11 @@ use tracing::{debug, instrument};
 pub struct Psr3Plugin;
 
 impl Plugin for Psr3Plugin {
+    #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("psr3")
+    }
+
     fn class_names(&self) -> Option<&'static [&'static str]> {
         None
     }

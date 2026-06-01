@@ -29,6 +29,11 @@ pub struct SwooleServerPlugin;
 
 impl Plugin for SwooleServerPlugin {
     #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("swoole")
+    }
+
+    #[inline]
     fn class_names(&self) -> Option<&'static [&'static str]> {
         Some(&[
             r"Swoole\Server",
@@ -112,6 +117,11 @@ impl SwooleServerPlugin {
 pub struct SwooleHttpResponsePlugin;
 
 impl Plugin for SwooleHttpResponsePlugin {
+    #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("swoole")
+    }
+
     #[inline]
     fn class_names(&self) -> Option<&'static [&'static str]> {
         Some(&["Swoole\\Http\\Response"])

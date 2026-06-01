@@ -44,6 +44,11 @@ static DTOR_MAP: Lazy<DashMap<u32, sys::zend_object_dtor_obj_t>> = Lazy::new(Def
 pub struct PdoPlugin;
 
 impl Plugin for PdoPlugin {
+    #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("pdo")
+    }
+
     fn class_names(&self) -> Option<&'static [&'static str]> {
         Some(&["PDO", "PDOStatement"])
     }

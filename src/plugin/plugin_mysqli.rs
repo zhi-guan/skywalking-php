@@ -36,6 +36,11 @@ pub struct MySQLImprovedPlugin;
 
 impl Plugin for MySQLImprovedPlugin {
     #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("mysqli")
+    }
+
+    #[inline]
     fn class_names(&self) -> Option<&'static [&'static str]> {
         Some(&["mysqli"])
     }

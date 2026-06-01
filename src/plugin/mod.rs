@@ -22,7 +22,7 @@ mod plugin_mysqli;
 mod plugin_pdo;
 // mod plugin_predis;
 mod plugin_psr3;
-// mod plugin_redis;
+mod plugin_redis;
 mod plugin_swoole;
 mod plugin_yar;
 mod style;
@@ -30,7 +30,7 @@ mod style;
 use crate::{
     execute::{AfterExecuteHook, BeforeExecuteHook},
     log::PsrLogLevel,
-    module::PSR_LOGGING_LEVEL,
+    module::{DISABLE_PLUGINS, PSR_LOGGING_LEVEL},
 };
 use once_cell::sync::Lazy;
 use phper::{classes::ClassEntry, eg, objects::ZObj};
@@ -49,7 +49,7 @@ static PLUGINS: Lazy<Vec<Box<DynPlugin>>> = Lazy::new(|| {
         Box::<plugin_swoole::SwooleHttpResponsePlugin>::default(),
         // Box::<plugin_predis::PredisPlugin>::default(),
         Box::<plugin_memcached::MemcachedPlugin>::default(),
-        // Box::<plugin_redis::RedisPlugin>::default(),
+        Box::<plugin_redis::RedisPlugin>::default(),
         Box::<plugin_amqplib::AmqplibPlugin>::default(),
         Box::<plugin_mongodb::MongodbPlugin>::default(),
         Box::<plugin_memcache::MemcachePlugin>::default(),
@@ -63,6 +63,11 @@ static PLUGINS: Lazy<Vec<Box<DynPlugin>>> = Lazy::new(|| {
 pub type DynPlugin = dyn Plugin + Send + Sync + 'static;
 
 pub trait Plugin {
+    /// Unique name for this plugin, used for the disable_plugins filter.
+    fn plugin_name(&self) -> Option<&'static str> {
+        None
+    }
+
     fn class_names(&self) -> Option<&'static [&'static str]>;
 
     fn function_name_prefix(&self) -> Option<&'static str>;
@@ -74,6 +79,15 @@ pub trait Plugin {
     fn hook(
         &self, class_name: Option<&str>, function_name: &str,
     ) -> Option<(Box<BeforeExecuteHook>, Box<AfterExecuteHook>)>;
+}
+
+/// Check if a plugin is enabled (not in the disable_plugins list).
+#[inline]
+fn is_plugin_enabled(plugin: &DynPlugin) -> bool {
+    match plugin.plugin_name() {
+        Some(name) => !DISABLE_PLUGINS.iter().any(|n| n == name),
+        None => true,
+    }
 }
 
 #[allow(static_mut_refs)] // TODO: Swith to use thread_local
@@ -98,6 +112,7 @@ pub fn select_plugin_hook(
             .entry((class_name.map(ToOwned::to_owned), function_name.to_owned()))
             .or_insert_with(|| {
                 select_plugin(class_name, function_name)
+                    .filter(|plugin| is_plugin_enabled(*plugin))
                     .and_then(|plugin| plugin.hook(class_name, function_name))
             })
             .as_ref()

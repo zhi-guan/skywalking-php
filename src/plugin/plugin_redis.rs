@@ -162,6 +162,11 @@ pub struct RedisPlugin;
 
 impl Plugin for RedisPlugin {
     #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("redis")
+    }
+
+    #[inline]
     fn class_names(&self) -> Option<&'static [&'static str]> {
         Some(&["Redis"])
     }
