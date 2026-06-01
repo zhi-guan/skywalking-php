@@ -38,6 +38,11 @@ pub struct MongodbPlugin;
 
 impl Plugin for MongodbPlugin {
     #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("mongodb")
+    }
+
+    #[inline]
     fn class_names(&self) -> Option<&'static [&'static str]> {
         Some(&[MANAGER_CLASS_NAME])
     }

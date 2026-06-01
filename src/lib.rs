@@ -118,6 +118,16 @@ const SKYWALKING_AGENT_STANDALONE_SOCKET_PATH: &str = "skywalking_agent.standalo
 /// `Info`, Notice`, Warning`, Error`, Critical`, Alert`, Emergency`.
 const SKYWALKING_AGENT_PSR_LOGGING_LEVEL: &str = "skywalking_agent.psr_logging_level";
 
+/// Sample rate for request tracing, float between 0.0 and 1.0.
+/// 1.0 means trace all requests, 0.1 means trace 10% of requests.
+const SKYWALKING_AGENT_SAMPLE_RATE: &str = "skywalking_agent.sample_rate";
+
+/// Comma-separated list of plugin names to disable.
+/// Available names: curl, yar, pdo, mysqli, swoole, predis, memcached,
+/// redis, amqplib, mongodb, memcache, psr3.
+/// Example: "redis,memcached" to disable Redis and Memcached tracing.
+const SKYWALKING_AGENT_DISABLE_PLUGINS: &str = "skywalking_agent.disable_plugins";
+
 #[php_get_module]
 pub fn get_module() -> Module {
     let mut module = Module::new(
@@ -211,6 +221,16 @@ pub fn get_module() -> Module {
     );
     module.add_ini(
         SKYWALKING_AGENT_PSR_LOGGING_LEVEL,
+        "".to_string(),
+        Policy::System,
+    );
+    module.add_ini(
+        SKYWALKING_AGENT_SAMPLE_RATE,
+        "1.0".to_string(),
+        Policy::System,
+    );
+    module.add_ini(
+        SKYWALKING_AGENT_DISABLE_PLUGINS,
         "".to_string(),
         Policy::System,
     );

@@ -1,0 +1,9 @@
+# Debian 10 buster - 阿里云归档镜像（推荐配置）
+
+deb https://mirrors.aliyun.com/debian-archive/debian buster main contrib non-free
+deb https://mirrors.aliyun.com/debian-archive/debian-security buster/updates main contrib non-free
+deb https://mirrors.aliyun.com/debian-archive/debian buster-updates main contrib non-free
+
+# 移除以下两行（它们会导致 GPG 错误）
+# deb https://mirrors.aliyun.com/debian-archive/debian buster-backports main contrib non-free
+# deb https://mirrors.aliyun.com/debian-archive/debian buster-proposed-updates main contrib non-free

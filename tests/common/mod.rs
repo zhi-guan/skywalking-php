@@ -19,7 +19,7 @@ use axum::{
     body::Body,
     extract::ConnectInfo,
     http::{Request, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::any,
 };
 use futures_util::future::join_all;
@@ -27,7 +27,7 @@ use libc::{SIGTERM, kill, pid_t};
 use once_cell::sync::Lazy;
 use std::{
     env,
-    fs::File,
+    fs::{self, File},
     io::{self, Cursor},
     net::SocketAddr,
     process::{ExitStatus, Stdio},
@@ -83,6 +83,13 @@ pub struct Fixture {
     php_swoole_2_child: Child,
 }
 
+pub struct FpmOnlyFixture {
+    http_server_1_handle: JoinHandle<()>,
+    http_server_2_handle: JoinHandle<()>,
+    php_fpm_1_child: Child,
+    php_fpm_2_child: Child,
+}
+
 pub async fn setup() -> Fixture {
     setup_logging();
     info!(
@@ -108,6 +115,29 @@ pub async fn setup() -> Fixture {
     }
 }
 
+pub async fn setup_fpm_only() -> FpmOnlyFixture {
+    setup_logging();
+    info!(
+        TARGET = TARGET,
+        EXT = EXT,
+        ENABLE_ZEND_OBSERVER = &*ENABLE_ZEND_OBSERVER,
+        "setup fpm-only fixture"
+    );
+
+    FpmOnlyFixture {
+        http_server_1_handle: tokio::spawn(setup_http_proxy_server(
+            PROXY_SERVER_1_ADDRESS,
+            FPM_SERVER_1_ADDRESS,
+        )),
+        http_server_2_handle: tokio::spawn(setup_http_proxy_server(
+            PROXY_SERVER_2_ADDRESS,
+            FPM_SERVER_2_ADDRESS,
+        )),
+        php_fpm_1_child: setup_php_fpm(1, FPM_SERVER_1_ADDRESS),
+        php_fpm_2_child: setup_php_fpm(2, FPM_SERVER_2_ADDRESS),
+    }
+}
+
 pub async fn teardown(fixture: Fixture) {
     fixture.http_server_1_handle.abort();
     fixture.http_server_2_handle.abort();
@@ -117,6 +147,20 @@ pub async fn teardown(fixture: Fixture) {
         kill_command(fixture.php_fpm_2_child),
         kill_command(fixture.php_swoole_1_child),
         kill_command(fixture.php_swoole_2_child),
+    ])
+    .await;
+    for result in results {
+        assert!(result.unwrap().success());
+    }
+}
+
+pub async fn teardown_fpm_only(fixture: FpmOnlyFixture) {
+    fixture.http_server_1_handle.abort();
+    fixture.http_server_2_handle.abort();
+
+    let results = join_all([
+        kill_command(fixture.php_fpm_1_child),
+        kill_command(fixture.php_fpm_2_child),
     ])
     .await;
     for result in results {
@@ -167,7 +211,7 @@ async fn setup_http_proxy_server(http_addr: &str, fpm_addr: &'static str) {
 async fn http_proxy_fpm_handler(
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>, Extension(state): Extension<Arc<State>>,
     req: Request<Body>,
-) -> impl IntoResponse {
+) -> Response {
     let fut = async move {
         let method = &req.method().to_string();
         let path = &req.uri().path().to_string();
@@ -227,16 +271,17 @@ async fn http_proxy_fpm_handler(
             return Ok((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 String::from_utf8(stderr).context("decode to UTF-8 string failed")?,
-            ));
+            )
+                .into_response());
         }
 
-        // Without tread with headers, because it is just for tests.
         if let Some(stdout) = stdout {
-            let mut content = String::from_utf8(stdout)?;
-            if let Some(index) = content.find("\r\n\r\n") {
-                content.replace_range(..index + 4, "");
-            }
-            return Ok((StatusCode::OK, content));
+            let body = if let Some(index) = stdout.windows(4).position(|w| w == b"\r\n\r\n") {
+                stdout[index + 4..].to_vec()
+            } else {
+                stdout
+            };
+            return Ok((StatusCode::OK, body).into_response());
         }
 
         bail!("stdout and stderr are empty");
@@ -245,7 +290,7 @@ async fn http_proxy_fpm_handler(
         Ok(x) => x,
         Err(err) => {
             error!(?err, "proxy failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
         }
     }
 }
@@ -283,44 +328,46 @@ fn create_request_uri(script_name: &str, query: &str) -> String {
 #[instrument]
 fn setup_php_fpm(index: usize, fpm_addr: &str) -> Child {
     let php_fpm = env::var("PHP_FPM_BIN").unwrap_or_else(|_| "php-fpm".to_string());
-    let args = [
-        &php_fpm,
-        "-F",
-        // "-n",
-        // "-c",
-        // "tests/conf/php.ini",
-        "-y",
-        &format!("tests/conf/php-fpm.{}.conf", index),
-        "-d",
-        &format!("extension=target/{}/libskywalking_agent{}", TARGET, EXT),
-        "-d",
-        "skywalking_agent.enable=On",
-        "-d",
-        &format!(
+    let conf = prepare_php_fpm_conf(index);
+    let mut args = vec![
+        php_fpm,
+        "-F".to_string(),
+        "-R".to_string(),
+        "-y".to_string(),
+        conf,
+        "-d".to_string(),
+        format!("extension={}", agent_extension_path()),
+    ];
+    append_extra_extensions(&mut args);
+    args.extend([
+        "-d".to_string(),
+        "skywalking_agent.enable=On".to_string(),
+        "-d".to_string(),
+        format!(
             "skywalking_agent.service_name=skywalking-agent-test-{}",
             index
         ),
-        "-d",
-        &format!("skywalking_agent.server_addr={}", COLLECTOR_GRPC_ADDRESS),
-        "-d",
-        &format!("skywalking_agent.log_level={}", PROCESS_LOG_LEVEL),
-        "-d",
-        &format!(
+        "-d".to_string(),
+        format!("skywalking_agent.server_addr={}", COLLECTOR_GRPC_ADDRESS),
+        "-d".to_string(),
+        format!("skywalking_agent.log_level={}", PROCESS_LOG_LEVEL),
+        "-d".to_string(),
+        format!(
             "skywalking_agent.log_file=/tmp/fpm-skywalking-agent.{}.log",
             index
         ),
-        "-d",
-        "skywalking_agent.worker_threads=3",
-        "-d",
-        &format!(
+        "-d".to_string(),
+        "skywalking_agent.worker_threads=3".to_string(),
+        "-d".to_string(),
+        format!(
             "skywalking_agent.enable_zend_observer={}",
             *ENABLE_ZEND_OBSERVER
         ),
-        "-d",
-        "skywalking_agent.psr_logging_level=Warning",
-    ];
+        "-d".to_string(),
+        "skywalking_agent.psr_logging_level=Warning".to_string(),
+    ]);
     info!(cmd = args.join(" "), "start command");
-    let child = Command::new(args[0])
+    let child = Command::new(&args[0])
         .args(&args[1..])
         .stdin(Stdio::null())
         .stdout(File::create("/tmp/fpm-skywalking-stdout.log").unwrap())
@@ -334,40 +381,40 @@ fn setup_php_fpm(index: usize, fpm_addr: &str) -> Child {
 #[instrument]
 fn setup_php_swoole(index: usize) -> Child {
     let php = env::var("PHP_BIN").unwrap_or_else(|_| "php".to_string());
-    let args = [
-        &php,
-        // "-n",
-        // "-c",
-        // "tests/conf/php.ini",
-        "-d",
-        &format!("extension=target/{}/libskywalking_agent{}", TARGET, EXT),
-        "-d",
-        "skywalking_agent.enable=On",
-        "-d",
-        &format!(
+    let mut args = vec![
+        php,
+        "-d".to_string(),
+        format!("extension={}", agent_extension_path()),
+    ];
+    append_extra_extensions(&mut args);
+    args.extend([
+        "-d".to_string(),
+        "skywalking_agent.enable=On".to_string(),
+        "-d".to_string(),
+        format!(
             "skywalking_agent.service_name=skywalking-agent-test-{}-swoole",
             index
         ),
-        "-d",
-        &format!("skywalking_agent.server_addr={}", COLLECTOR_GRPC_ADDRESS),
-        "-d",
-        &format!("skywalking_agent.log_level={}", PROCESS_LOG_LEVEL),
-        "-d",
-        &format!(
+        "-d".to_string(),
+        format!("skywalking_agent.server_addr={}", COLLECTOR_GRPC_ADDRESS),
+        "-d".to_string(),
+        format!("skywalking_agent.log_level={}", PROCESS_LOG_LEVEL),
+        "-d".to_string(),
+        format!(
             "skywalking_agent.log_file=/tmp/swoole-skywalking-agent.{}.log",
             index
         ),
-        "-d",
-        "skywalking.worker_threads=3",
-        "-d",
-        &format!(
+        "-d".to_string(),
+        "skywalking.worker_threads=3".to_string(),
+        "-d".to_string(),
+        format!(
             "skywalking_agent.enable_zend_observer={}",
             *ENABLE_ZEND_OBSERVER
         ),
-        &format!("tests/php/swoole/main.{}.php", index),
-    ];
+        format!("tests/php/swoole/main.{}.php", index),
+    ]);
     info!(cmd = args.join(" "), "start command");
-    let child = Command::new(args[0])
+    let child = Command::new(&args[0])
         .args(&args[1..])
         .stdin(Stdio::null())
         .stdout(File::create("/tmp/swoole-skywalking-stdout.log").unwrap())
@@ -385,4 +432,48 @@ async fn kill_command(mut child: Child) -> io::Result<ExitStatus> {
         }
     }
     child.wait().await
+}
+
+fn append_extra_extensions(args: &mut Vec<String>) {
+    let Ok(extra_extensions) = env::var("PHP_EXTRA_EXTENSIONS") else {
+        return;
+    };
+
+    for ext in extra_extensions
+        .split(',')
+        .map(str::trim)
+        .filter(|ext| !ext.is_empty())
+    {
+        args.push("-d".to_string());
+        args.push(format!("extension={ext}"));
+    }
+}
+
+fn agent_extension_path() -> String {
+    env::current_dir()
+        .unwrap()
+        .join("target")
+        .join(TARGET)
+        .join(format!("libskywalking_agent{}", EXT))
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+fn prepare_php_fpm_conf(index: usize) -> String {
+    let template = env::current_dir()
+        .unwrap()
+        .join("tests")
+        .join("conf")
+        .join(format!("php-fpm.{}.conf", index));
+    let mut conf = fs::read_to_string(template).unwrap();
+
+    let uid = unsafe { libc::geteuid() };
+    let gid = unsafe { libc::getegid() };
+    conf = conf.replace("user = 1000", &format!("user = {}", uid));
+    conf = conf.replace("group = 1000", &format!("group = {}", gid));
+
+    let path = env::temp_dir().join(format!("skywalking-php-fpm.{}.conf", index));
+    fs::write(&path, conf).unwrap();
+    path.to_str().unwrap().to_string()
 }

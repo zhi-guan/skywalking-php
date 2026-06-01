@@ -37,6 +37,11 @@ use skywalking::{
 pub struct AmqplibPlugin;
 
 impl Plugin for AmqplibPlugin {
+    #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("amqplib")
+    }
+
     fn class_names(&self) -> Option<&'static [&'static str]> {
         Some(&["PhpAmqpLib\\Channel\\AMQPChannel"])
     }

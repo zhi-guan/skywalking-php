@@ -149,6 +149,11 @@ static REDIS_ALL_COMMANDS: Lazy<HashSet<&str>> = Lazy::new(|| {
 pub struct PredisPlugin;
 
 impl Plugin for PredisPlugin {
+    #[inline]
+    fn plugin_name(&self) -> Option<&'static str> {
+        Some("predis")
+    }
+
     fn class_names(&self) -> Option<&'static [&'static str]> {
         Some(&["Predis\\Client"])
     }
